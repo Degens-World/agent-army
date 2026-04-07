@@ -7,7 +7,9 @@ from pathlib import Path
 from typing import Iterable
 
 from rich import box
+from rich.align import Align
 from rich.console import Group
+from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
@@ -17,6 +19,7 @@ from agent_army.models import ArtifactDetail, RunDetail, RunSummary, TaskDetail,
 
 
 TERMINAL_TASK_STATES = {TaskStatus.completed, TaskStatus.failed, TaskStatus.rejected}
+TERMINAL_RUN_STATES = {"completed", "failed", "paused"}
 ROLE_CODENAMES = {
     "planner": [
         "General Tasker",
@@ -43,6 +46,49 @@ ROLE_CODENAMES = {
         "Sergeant Semaphore",
     ],
 }
+WAR_HEADER_FRAMES = [
+    [
+        r"   o7        o7        o7        o7",
+        r"  /|\       /|\       /|\       /|\      >>> TASK FRONT >>>",
+        "  / \\       / \\       / \\       / \\",
+    ],
+    [
+        r"    o7        o7        o7        o7",
+        r"   /|\       /|\       /|\       /|\     >>> TASK FRONT >>>",
+        "  _/ \\      _/ \\      _/ \\      _/ \\",
+    ],
+    [
+        r"     o7        o7        o7        o7",
+        r"    /|\       /|\       /|\       /|\    >>> TASK FRONT >>>",
+        "    / \\_      / \\_      / \\_      / \\_",
+    ],
+]
+UNIT_PORTRAIT_FRAMES = [
+    [
+        "      __",
+        "     /__\\",
+        r"    (o_o )",
+        "    /|=|\\ ",
+        "    / \\ \\ ",
+        "  marching",
+    ],
+    [
+        "      __",
+        "     /__\\",
+        r"    (o_o )",
+        "   _/|=|\\_",
+        "     / \\  ",
+        " advancing",
+    ],
+    [
+        "      __",
+        "     /__\\",
+        r"    (o_o )",
+        "    /|=|\\ ",
+        "   _/ \\   ",
+        "  charging",
+    ],
+]
 
 
 @dataclass(slots=True)
@@ -214,11 +260,47 @@ def render_dashboard(
     events: list[MonitorEvent],
     *,
     show_completed: bool,
-) -> Group:
-    header = _render_run_header(snapshot.run)
-    agents = _render_agents_table(snapshot.tasks, snapshot.artifacts, show_completed=show_completed)
-    event_log = _render_event_log(events)
-    return Group(header, agents, event_log)
+    frame_index: int = 0,
+) -> Layout:
+    layout = Layout(name="root")
+    layout.split_column(
+        Layout(_render_war_header(snapshot.run, frame_index), name="header", size=7),
+        Layout(name="body", ratio=4),
+        Layout(_render_action_ledger(snapshot.tasks, snapshot.artifacts, show_completed=show_completed), name="ledger", size=15),
+    )
+    layout["body"].split_row(
+        Layout(_render_unit_panel(snapshot.run, snapshot.tasks, frame_index), name="unit", size=28),
+        Layout(_render_pulse_feed(snapshot.tasks, events), name="pulses", ratio=3),
+    )
+    return layout
+
+
+def render_scroll_snapshot(snapshot: MonitorSnapshot, *, frame_index: int = 0) -> str:
+    lines = []
+    lines.extend(_war_header_lines(snapshot.run, frame_index))
+    counts = ", ".join(f"{key}={value}" for key, value in sorted(snapshot.run.task_counts.items())) or "no tasks"
+    lines.append(
+        f"[run] {snapshot.run.id} | status={snapshot.run.status.value} | counts={counts} | age={format_elapsed(snapshot.run.created_at)}"
+    )
+    lines.append(f"[goal] {truncate(snapshot.run.goal, 160)}")
+    return "\n".join(lines)
+
+
+def render_scroll_events(snapshot: MonitorSnapshot, events: list[MonitorEvent], *, show_completed: bool) -> list[str]:
+    lines: list[str] = []
+    if events:
+        for event in events:
+            lines.append(
+                f"[{format_elapsed(event.timestamp):>7}] {event.agent}: {event.previous_status or 'new'} -> {event.current_status} | "
+                f"{truncate(event.title, 52)} | {truncate(event_blurb(event), 88)}"
+            )
+    else:
+        visible = _visible_tasks(snapshot.tasks, show_completed=show_completed)
+        for task in visible[:6]:
+            lines.append(
+                f"[status ] {agent_name(task)} | {task.status.value:<11} | {truncate(task.title, 52)} | {truncate(caper_text(task), 88)}"
+            )
+    return lines
 
 
 async def load_snapshot(db_path: Path, run_id: str | None) -> MonitorSnapshot:
@@ -254,6 +336,22 @@ def _render_run_header(run: RunDetail) -> Panel:
     return Panel(body, title="Run", border_style="blue")
 
 
+def _render_war_header(run: RunDetail, frame_index: int) -> Panel:
+    text = Text()
+    lines = _war_header_lines(run, frame_index)
+    text.append(lines[0] + "\n", style="bold bright_green")
+    text.append(lines[1] + "\n", style="bold bright_cyan")
+    text.append(lines[2] + "\n", style="bold bright_green")
+    text.append(lines[3], style="bold bright_magenta")
+    return Panel(Align.center(text), title="[bold bright_magenta]Agent Army // Tactical Dashboard[/]", border_style="bright_blue")
+
+
+def _war_header_lines(run: RunDetail, frame_index: int) -> list[str]:
+    frame = WAR_HEADER_FRAMES[frame_index % len(WAR_HEADER_FRAMES)]
+    objective = truncate(run.goal.upper(), 72)
+    return [*frame, f" OPERATION: {objective}"]
+
+
 def _render_agents_table(
     tasks: list[TaskDetail],
     artifacts: list[ArtifactDetail],
@@ -261,7 +359,7 @@ def _render_agents_table(
     show_completed: bool,
 ) -> Panel:
     artifact_by_task = latest_artifact_by_task(artifacts)
-    rows = tasks if show_completed else [task for task in tasks if task.status not in TERMINAL_TASK_STATES]
+    rows = _visible_tasks(tasks, show_completed=show_completed)
     if not rows:
         rows = tasks[-5:]
 
@@ -294,6 +392,12 @@ def _render_agents_table(
     return Panel(table, title="Agents", border_style="green")
 
 
+def _visible_tasks(tasks: list[TaskDetail], *, show_completed: bool) -> list[TaskDetail]:
+    if show_completed:
+        return tasks
+    return [task for task in tasks if task.status not in TERMINAL_TASK_STATES]
+
+
 def _render_event_log(events: list[MonitorEvent]) -> Panel:
     table = Table(box=box.SIMPLE, expand=True)
     table.add_column("When", width=8)
@@ -317,6 +421,105 @@ def _render_event_log(events: list[MonitorEvent]) -> Panel:
             )
 
     return Panel(table, title="Recent Events", border_style="yellow")
+
+
+def _render_unit_panel(run: RunDetail, tasks: list[TaskDetail], frame_index: int) -> Panel:
+    portrait = UNIT_PORTRAIT_FRAMES[frame_index % len(UNIT_PORTRAIT_FRAMES)]
+    lead_task = _lead_task(tasks)
+    counts = _status_counts_text(run)
+
+    body = Text()
+    body.append(f"{agent_name(lead_task) if lead_task else 'Command HQ'}\n", style="bold bright_yellow")
+    for line in portrait:
+        body.append(line + "\n", style="bright_green")
+    body.append("\n")
+    body.append(f"status: {run.status.value}\n", style="bright_cyan")
+    body.append(f"counts: {counts}\n")
+    if lead_task is not None:
+        body.append(f"focus: {truncate(lead_task.title, 22)}\n", style="bright_white")
+        body.append(f"order: {truncate(caper_text(lead_task), 26)}", style=status_style(lead_task.status))
+    else:
+        body.append("focus: awaiting orders")
+    return Panel(body, title="[bold bright_green]Command Unit[/]", border_style="bright_green")
+
+
+def _render_pulse_feed(tasks: list[TaskDetail], events: list[MonitorEvent]) -> Panel:
+    lines = Table(box=box.SIMPLE, expand=True, show_header=False)
+    lines.add_column("Pulse", ratio=1)
+
+    if events:
+        for event in events[-12:]:
+            stamp = format_elapsed(event.timestamp)
+            pulse = Text()
+            pulse.append(f"[{stamp}] ", style="dim")
+            pulse.append(f"{event.agent} ", style="bold bright_yellow")
+            pulse.append(f"{event.previous_status or 'new'} -> {event.current_status} ", style="bright_cyan")
+            pulse.append(f"{truncate(event.title, 38)} ", style="white")
+            pulse.append(truncate(event_blurb(event), 72), style="bright_magenta" if event.error else "green")
+            lines.add_row(pulse)
+    else:
+        for task in _active_tasks(tasks)[:10]:
+            pulse = Text()
+            pulse.append(f"{agent_name(task)} ", style="bold bright_yellow")
+            pulse.append(f"{task.status.value} ", style=status_style(task.status))
+            pulse.append(f"{truncate(task.title, 44)} ", style="white")
+            pulse.append(truncate(caper_text(task), 72), style="bright_green")
+            lines.add_row(pulse)
+
+    return Panel(lines, title="[bold bright_cyan]Latest Pulses[/]", border_style="bright_cyan")
+
+
+def _render_action_ledger(tasks: list[TaskDetail], artifacts: list[ArtifactDetail], *, show_completed: bool) -> Panel:
+    artifact_by_task = latest_artifact_by_task(artifacts)
+    rows = sorted(
+        _visible_tasks(tasks, show_completed=show_completed) or tasks,
+        key=lambda task: task.updated_at,
+        reverse=True,
+    )[:12]
+
+    table = Table(box=box.SIMPLE_HEAVY, expand=True)
+    table.add_column("Time", width=8, style="bright_cyan")
+    table.add_column("Unit", width=24, style="bold bright_yellow")
+    table.add_column("Stage", width=12)
+    table.add_column("Task", ratio=2)
+    table.add_column("Notes", ratio=3)
+
+    for task in rows:
+        artifact = artifact_by_task.get(task.id)
+        notes = task.error or caper_text(task)
+        if artifact is not None and artifact.kind in {"worker_output", "final"}:
+            notes = truncate(artifact.content, 88)
+        table.add_row(
+            format_elapsed(task.updated_at),
+            agent_name(task),
+            task.status.value,
+            truncate(task.title, 48),
+            truncate(notes, 96),
+        )
+
+    return Panel(table, title="[bold bright_magenta]Ledger of Actions[/]", border_style="bright_magenta")
+
+
+def _active_tasks(tasks: list[TaskDetail]) -> list[TaskDetail]:
+    active_statuses = {TaskStatus.running, TaskStatus.queued, TaskStatus.pending, TaskStatus.needs_retry, TaskStatus.blocked}
+    ordered = sorted(
+        tasks,
+        key=lambda task: (
+            task.status in active_statuses,
+            task.updated_at,
+        ),
+        reverse=True,
+    )
+    return ordered
+
+
+def _lead_task(tasks: list[TaskDetail]) -> TaskDetail | None:
+    active = _active_tasks(tasks)
+    return active[0] if active else None
+
+
+def _status_counts_text(run: RunDetail) -> str:
+    return ", ".join(f"{key}:{value}" for key, value in sorted(run.task_counts.items())) or "none"
 
 
 async def wait_for_terminal_state(db_path: Path, run_id: str, refresh_seconds: float) -> MonitorSnapshot:

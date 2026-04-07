@@ -315,6 +315,15 @@ class Database:
             )
             await conn.commit()
 
+    async def replace_task_dependencies(self, task_id: str, depends_on: list[str]) -> None:
+        now = utcnow().isoformat()
+        async with self.connect() as conn:
+            await conn.execute(
+                "UPDATE tasks SET depends_on_json = ?, updated_at = ? WHERE id = ?",
+                (dump_json(depends_on), now, task_id),
+            )
+            await conn.commit()
+
     async def ensure_run_plan_task(self, run_id: str, goal: str, metadata: dict[str, Any]) -> str:
         async with self.connect() as conn:
             row = await self._fetchone(

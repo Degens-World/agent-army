@@ -1,7 +1,14 @@
 from datetime import UTC, datetime
 
 from agent_army.models import ArtifactDetail, RunDetail, RunStatus, TaskDetail, TaskStatus, TaskType
-from agent_army.monitor import MonitorSnapshot, agent_name, caper_text, collect_events, event_blurb
+from agent_army.monitor import (
+    MonitorSnapshot,
+    agent_name,
+    caper_text,
+    collect_events,
+    event_blurb,
+    render_scroll_snapshot,
+)
 
 
 def _task(*, status: TaskStatus, updated_at: str, task_type: TaskType = TaskType.execute) -> TaskDetail:
@@ -67,3 +74,11 @@ def test_event_blurb_prefers_funny_status_copy_without_error() -> None:
     events = collect_events(before, after)
 
     assert "mission accomplished" in event_blurb(events[0])
+
+
+def test_render_scroll_snapshot_includes_operation_header() -> None:
+    snapshot = _snapshot(_task(status=TaskStatus.running, updated_at="2026-01-01T00:00:05+00:00"))
+    rendered = render_scroll_snapshot(snapshot, frame_index=1)
+
+    assert "OPERATION:" in rendered
+    assert "TASK FRONT" in rendered

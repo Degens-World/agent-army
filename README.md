@@ -58,6 +58,7 @@ ollama pull qwen2.5-coder:14b
 
 ```powershell
 $env:AGENT_ARMY_DB_PATH = "agent_army.db"
+$env:AGENT_ARMY_WORKSPACE_ROOT = "output\runs"
 $env:AGENT_ARMY_OLLAMA_HOST = "http://127.0.0.1:11434"
 $env:AGENT_ARMY_PLANNER_MODEL = "qwen2.5:14b"
 $env:AGENT_ARMY_WORKER_MODEL = "qwen2.5-coder:14b"
@@ -128,13 +129,55 @@ The CLI monitor polls the SQLite database and renders:
 - run metadata and aggregate task counts
 - a live table of logical agents and their task status
 - recent task state transitions inferred from polling diffs
+- an animated ASCII operation header in dashboard mode
 
 Useful options:
 
 - `--run-id <id>` to watch a specific run
 - `--refresh 0.5` to poll faster
+- `--mode dashboard` for the fixed tactical dashboard
+- `--mode scroll` for log-style output
 - `--once` to render a snapshot and exit
 - `--show-completed` to keep completed tasks visible in the table
+
+## Chat interface
+
+You can start runs directly from an interactive terminal chat:
+
+```powershell
+python -m agent_army.cli chat --db-path output\chat.db
+```
+
+The chat UI uses dashboard mode by default. If you want a plain log feed instead:
+
+```powershell
+python -m agent_army.cli chat --db-path output\chat.db --mode scroll
+```
+
+Inside chat:
+
+- type plain text to start a new run
+- use `/runs` to list recent runs
+- use `/watch <run-id>` to follow a run
+- use `/help` for commands
+- use `/quit` to exit
+
+Each completed chat run writes its final artifact to `output/chat-<run-id>.md`.
+
+## Coding workspaces
+
+Coding runs now materialize task outputs into per-run folders under `output/runs/<run-id>/`.
+
+- task-level work is written to `output/runs/<run-id>/tasks/<task-id>/`
+- the final deliverable is written to `output/runs/<run-id>/final/`
+- each workspace includes an `artifact_manifest.json`
+
+For single-file browser tasks like an HTML game, the final folder will typically contain:
+
+- `index.html`
+- `artifact_manifest.json`
+
+The final artifact metadata returned by the API includes the workspace path, entrypoint, and file list.
 
 ## Notes on scale
 

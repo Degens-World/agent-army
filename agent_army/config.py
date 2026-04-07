@@ -15,6 +15,7 @@ class Settings(BaseSettings):
 
     app_name: str = "Agent Army"
     db_path: Path = Field(default=Path("agent_army.db"))
+    workspace_root: Path = Field(default=Path("output") / "runs")
     ollama_host: str = "http://127.0.0.1:11434"
     planner_model: str = "qwen2.5:14b"
     worker_model: str = "qwen2.5-coder:14b"

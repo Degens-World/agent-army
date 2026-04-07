@@ -29,7 +29,7 @@ class ReviewerService:
             )
             raw = self._client.extract_json(response)
             return ReviewDecision.model_validate(raw)
-        except (ValueError, ValidationError):
+        except Exception:
             return self.fallback_review(task, worker_output)
 
     @staticmethod
