@@ -30,25 +30,41 @@ class WorkspaceManager:
     def __init__(self, root: Path) -> None:
         self._root = root
 
-    def run_root(self, run_id: str) -> Path:
-        return self._root / run_id
+    def run_root(self, run_id: str, goal: str, existing_root: Path | None = None) -> Path:
+        if existing_root is not None:
+            existing_root.mkdir(parents=True, exist_ok=True)
+            return existing_root
+        return self._ensure_run_root(run_id, goal)
 
-    def task_root(self, run_id: str, task_id: str) -> Path:
-        return self.run_root(run_id) / "tasks" / task_id
+    def task_root(
+        self,
+        run_id: str,
+        goal: str,
+        task_id: str,
+        title: str,
+        sequence_index: int | None = None,
+        existing_root: Path | None = None,
+    ) -> Path:
+        task_name = self._task_name(title, prefix=f"{sequence_index + 1:02d}" if sequence_index is not None else None)
+        return self.run_root(run_id, goal, existing_root) / "tasks" / task_name
 
-    def final_root(self, run_id: str) -> Path:
-        return self.run_root(run_id) / "final"
+    def final_root(self, run_id: str, goal: str, existing_root: Path | None = None) -> Path:
+        return self.run_root(run_id, goal, existing_root) / "final"
 
     def materialize_task_output(
         self,
         *,
         run_id: str,
         task_id: str,
+        goal: str,
+        title: str,
+        sequence_index: int | None,
         profile: GoalProfile,
         phase: str,
         raw_output: str,
+        existing_root: Path | None = None,
     ) -> WorkspaceSnapshot:
-        root = self.task_root(run_id, task_id)
+        root = self.task_root(run_id, goal, task_id, title, sequence_index, existing_root)
         file_map = self._build_file_map(profile=profile, phase=phase, raw_output=raw_output)
         entrypoint = "index.html" if "index.html" in file_map else None
         return self._write_workspace(root=root, file_map=file_map, entrypoint=entrypoint, phase=phase)
@@ -57,10 +73,12 @@ class WorkspaceManager:
         self,
         *,
         run_id: str,
+        goal: str,
         profile: GoalProfile,
         raw_output: str,
+        existing_root: Path | None = None,
     ) -> WorkspaceSnapshot:
-        root = self.final_root(run_id)
+        root = self.final_root(run_id, goal, existing_root)
         file_map = self._build_file_map(profile=profile, phase="final", raw_output=raw_output)
         entrypoint = "index.html" if "index.html" in file_map else None
         return self._write_workspace(root=root, file_map=file_map, entrypoint=entrypoint, phase="final")
@@ -166,3 +184,38 @@ class WorkspaceManager:
             path = self._safe_relative_path(match.group("path")).as_posix()
             bundle[path] = match.group("body").strip() + "\n"
         return bundle
+
+    @staticmethod
+    def _slugify(label: str) -> str:
+        slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+        slug = slug or "run"
+        return slug[:64].rstrip("-")
+
+    def _ensure_run_root(self, run_id: str, goal: str) -> Path:
+        self._root.mkdir(parents=True, exist_ok=True)
+        base_name = self._slugify(goal)
+        candidate = self._root / base_name
+        suffix = 2
+        while True:
+            marker_path = candidate / ".agent-army-run.json"
+            if candidate.exists():
+                if marker_path.exists():
+                    try:
+                        marker = json.loads(marker_path.read_text(encoding="utf-8"))
+                    except json.JSONDecodeError:
+                        marker = {}
+                    if marker.get("run_id") == run_id:
+                        return candidate
+                candidate = self._root / f"{base_name}-{suffix}"
+                suffix += 1
+                continue
+
+            candidate.mkdir(parents=True, exist_ok=True)
+            marker_path.write_text(json.dumps({"run_id": run_id, "goal": goal}, indent=2), encoding="utf-8")
+            return candidate
+
+    def _task_name(self, title: str, prefix: str | None = None) -> str:
+        slug = self._slugify(title)
+        if prefix:
+            return f"{prefix}-{slug}"
+        return slug

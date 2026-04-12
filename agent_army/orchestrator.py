@@ -160,7 +160,8 @@ class Orchestrator:
             await self._db.update_task_status(task.id, TaskStatus.failed, error="Run not found.")
             return
 
-        plan = await self._planner.plan(run.goal)
+        plan_goal = self._planning_goal(run.goal, run.metadata)
+        plan = await self._planner.plan(plan_goal)
         execute_ids: list[str] = []
         for index, subtask in enumerate(plan.subtasks):
             depends_on = [execute_ids[dep] for dep in subtask.depends_on_indexes if dep < len(execute_ids)]
@@ -208,6 +209,8 @@ class Orchestrator:
         profile = infer_goal_profile(run.goal)
         model = self._worker_model
         task_phase = "general"
+        reopen_context = self._reopen_context(run.metadata)
+        project_root_override = self._reopen_project_root(run.metadata)
         if profile.domain == "coding":
             task_phase, phase_guidance = self._coding_phase_instructions(task)
             if task_phase in {"contract", "verification"}:
@@ -218,6 +221,7 @@ class Orchestrator:
                     acceptance_criteria="\n".join(f"- {item}" for item in task.payload.get("acceptance_criteria", [])),
                     output_format=task.payload.get("output_format", "markdown"),
                     dependency_context=dependency_context or "None",
+                    reopen_context=reopen_context or "None",
                     review_feedback=feedback if feedback else "None",
                 )
                 system_prompt = WORKER_SYSTEM_PROMPT
@@ -233,6 +237,7 @@ class Orchestrator:
                     language_hint=profile.language_hint,
                     final_output_instruction=profile.final_output_instruction,
                     dependency_context=dependency_context or "None",
+                    reopen_context=reopen_context or "None",
                     review_feedback=feedback if feedback else "None",
                     phase_guidance=phase_guidance,
                 )
@@ -245,6 +250,7 @@ class Orchestrator:
                 acceptance_criteria="\n".join(f"- {item}" for item in task.payload.get("acceptance_criteria", [])),
                 output_format=task.payload.get("output_format", "markdown"),
                 dependency_context=dependency_context or "None",
+                reopen_context=reopen_context or "None",
                 review_feedback=feedback if feedback else "None",
             )
             system_prompt = WORKER_SYSTEM_PROMPT
@@ -259,9 +265,13 @@ class Orchestrator:
             workspace = self._workspace.materialize_task_output(
                 run_id=task.run_id,
                 task_id=task.id,
+                goal=run.goal,
+                title=task.title,
+                sequence_index=task.payload.get("sequence_index"),
                 profile=profile,
                 phase=task_phase,
                 raw_output=output,
+                existing_root=project_root_override,
             )
             workspace_metadata = workspace.metadata()
             await self._db.create_artifact(
@@ -350,6 +360,7 @@ class Orchestrator:
                 artifact_format=profile.artifact_format,
                 language_hint=profile.language_hint,
                 worker_output=worker_artifact.content,
+                reopen_context=self._reopen_context(run.metadata) or "None",
                 workspace_summary=self._format_workspace_summary(target_task.result),
                 validator_summary=self._format_validator_summary(validator_result),
                 phase_guidance=phase_guidance,
@@ -440,8 +451,10 @@ class Orchestrator:
             final_output = await self._select_coding_final_output(run.id, artifacts, run.goal)
             final_workspace = self._workspace.materialize_final_output(
                 run_id=run.id,
+                goal=run.goal,
                 profile=profile,
                 raw_output=final_output,
+                existing_root=self._reopen_project_root(run.metadata),
             )
             final_metadata = {"goal": run.goal, **final_workspace.metadata()}
         else:
@@ -654,7 +667,8 @@ class Orchestrator:
                 phase,
                 (
                     "Return a concise implementation contract only. Do not return source code. "
-                    "Describe deliverable shape, game rules, state model, UI interactions, win conditions, and edge cases."
+                    "Describe deliverable shape, game rules, state model, UI interactions, win conditions, and edge cases. "
+                    "If an existing artifact is provided, describe the required modifications while preserving unaffected behavior."
                 ),
             )
         if phase == "verification":
@@ -662,7 +676,8 @@ class Orchestrator:
                 phase,
                 (
                     "Inspect the implementation from dependency context and return a concrete verification report. "
-                    "Use bullets. Identify exact defects, missing rules, and edge cases, or state that coverage looks complete."
+                    "Use bullets. Identify exact defects, missing rules, and edge cases, or state that coverage looks complete. "
+                    "When revising an existing artifact, focus on whether the requested changes were applied correctly without regressions."
                 ),
             )
         if phase == "finalization":
@@ -670,14 +685,16 @@ class Orchestrator:
                 phase,
                 (
                     "Return the corrected final runnable artifact only. Incorporate the verification findings from dependency context "
-                    "and ensure previously reported defects are fixed in this full artifact."
+                    "and ensure previously reported defects are fixed in this full artifact. "
+                    "If an existing artifact is provided, modify it rather than redesigning unrelated parts."
                 ),
             )
         return (
             phase,
             (
                 "Return a full runnable implementation that follows the implementation contract from dependency context. "
-                "Do not return fragments, TODOs, or explanatory prose outside the artifact."
+                "Do not return fragments, TODOs, or explanatory prose outside the artifact. "
+                "If an existing artifact is provided, treat it as the base implementation and preserve unrelated working behavior."
             ),
         )
 
@@ -714,6 +731,99 @@ class Orchestrator:
                 "Reject partial implementations, pseudocode, or artifacts missing core rules."
             ),
         )
+
+    @staticmethod
+    def _planning_goal(goal: str, metadata: dict[str, object]) -> str:
+        reopen = metadata.get("reopen")
+        if not isinstance(reopen, dict):
+            return goal
+        instructions = str(reopen.get("instructions", "")).strip()
+        if not instructions:
+            return goal
+        return (
+            f"{goal}\n\n"
+            "Revision request:\n"
+            f"{instructions}\n\n"
+            "Modify the existing deliverable instead of starting over. Preserve unaffected behavior."
+        )
+
+    def _reopen_context(self, metadata: dict[str, object]) -> str:
+        reopen = metadata.get("reopen")
+        if not isinstance(reopen, dict):
+            return ""
+
+        lines = [
+            f"Source run: {reopen.get('source_run_id', 'unknown')}",
+            f"Original goal: {reopen.get('source_goal', 'unknown')}",
+            f"Requested change: {reopen.get('instructions', 'none')}",
+        ]
+        workspace_path = reopen.get("source_workspace_path")
+        entrypoint = reopen.get("source_entrypoint")
+        files = reopen.get("source_files")
+        if workspace_path:
+            lines.append(f"Source workspace: {workspace_path}")
+        if entrypoint:
+            lines.append(f"Source entrypoint: {entrypoint}")
+        if isinstance(files, list) and files:
+            lines.append("Source files:")
+            lines.extend(f"- {item}" for item in files)
+        file_context = self._source_workspace_file_context(reopen)
+        if file_context:
+            lines.append("Source file contents:")
+            lines.append(file_context)
+        return "\n".join(lines)
+
+    @staticmethod
+    def _reopen_project_root(metadata: dict[str, object]) -> Path | None:
+        reopen = metadata.get("reopen")
+        if not isinstance(reopen, dict):
+            return None
+        project_root = reopen.get("source_project_root")
+        if isinstance(project_root, str) and project_root.strip():
+            return Path(project_root)
+        workspace_path = reopen.get("source_workspace_path")
+        if isinstance(workspace_path, str) and workspace_path.strip():
+            return Path(workspace_path).parent
+        return None
+
+    @staticmethod
+    def _source_workspace_file_context(reopen: dict[str, object], *, max_chars: int = 60000) -> str:
+        workspace_path = reopen.get("source_workspace_path")
+        if not isinstance(workspace_path, str):
+            return ""
+        root = Path(workspace_path)
+        files = reopen.get("source_files")
+        if not root.exists() or not isinstance(files, list):
+            return ""
+
+        chunks: list[str] = []
+        remaining = max_chars
+        for item in files:
+            if not isinstance(item, str) or item == "artifact_manifest.json":
+                continue
+            file_path = root / item
+            if not file_path.exists() or not file_path.is_file():
+                continue
+            suffix = file_path.suffix.lstrip(".") or "text"
+            content = file_path.read_text(encoding="utf-8")
+            chunk = f"FILE: {item}\n```{suffix}\n{content}\n```"
+            if len(chunk) > remaining and chunks:
+                break
+            if len(chunk) > remaining:
+                body_budget = max(2000, remaining - len(f"FILE: {item}\n```{suffix}\n\n```") - 32)
+                head_budget = body_budget // 2
+                tail_budget = body_budget - head_budget
+                excerpt = (
+                    content[:head_budget]
+                    + "\n\n[... existing file truncated for prompt size ...]\n\n"
+                    + content[-tail_budget:]
+                )
+                chunk = f"FILE: {item}\n```{suffix}\n{excerpt}\n```"
+            chunks.append(chunk)
+            remaining -= len(chunk)
+            if remaining <= 0:
+                break
+        return "\n\n".join(chunks)
 
     @staticmethod
     def _format_workspace_summary(result: dict[str, object] | None) -> str:

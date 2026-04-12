@@ -21,6 +21,27 @@ def test_classify_chat_input_is_case_insensitive_for_commands() -> None:
     assert command.kind == "runs"
 
 
+def test_classify_chat_input_detects_revise_command() -> None:
+    command = classify_chat_input("/revise run-42 fix the restart button")
+
+    assert command.kind == "revise"
+    assert command.value == "run-42|fix the restart button"
+
+
+def test_classify_chat_input_prompts_when_revise_has_only_run_id() -> None:
+    command = classify_chat_input("/revise run-42")
+
+    assert command.kind == "revise_prompt"
+    assert command.value == "run-42"
+
+
+def test_classify_chat_input_prompts_when_revise_has_no_args() -> None:
+    command = classify_chat_input("/revise")
+
+    assert command.kind == "revise_prompt"
+    assert command.value == ""
+
+
 def test_chat_result_path_uses_output_directory() -> None:
     path = chat_result_path("run-42")
 

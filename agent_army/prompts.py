@@ -97,6 +97,9 @@ Required output format:
 Relevant dependency context:
 {dependency_context}
 
+Existing artifact or revision context:
+{reopen_context}
+
 Review feedback from a previous attempt, if any:
 {review_feedback}
 """
@@ -127,6 +130,9 @@ Final deliverable instruction:
 
 Relevant dependency context:
 {dependency_context}
+
+Existing artifact or revision context:
+{reopen_context}
 
 Review feedback from a previous attempt, if any:
 {review_feedback}
@@ -188,6 +194,9 @@ Language hint:
 
 Worker output:
 {worker_output}
+
+Existing artifact or revision context:
+{reopen_context}
 
 Workspace summary:
 {workspace_summary}

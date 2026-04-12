@@ -20,6 +20,12 @@ For each run, the system:
 4. reviews each subtask result against acceptance criteria
 5. synthesizes approved outputs into a final result
 
+For coding goals, the system also:
+
+- materializes task and final outputs into real workspace folders
+- keeps a manifest for each workspace
+- supports reopening an existing run to modify or fix the original deliverable
+
 ## Architecture
 
 - `FastAPI` exposes the API
@@ -113,6 +119,14 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/runs/<run-id>/tasks"
 Invoke-RestMethod -Uri "http://127.0.0.1:8000/runs/<run-id>/artifacts"
 ```
 
+### 7. Reopen an existing run
+
+You can ask the army to revise an existing run instead of starting over:
+
+```powershell
+Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:8000/runs/<run-id>/reopen" -ContentType "application/json" -Body '{"instructions":"Fix the restart flow and keep the rest of the game unchanged."}'
+```
+
 ## API overview
 
 - `POST /runs`
@@ -121,6 +135,7 @@ Invoke-RestMethod -Uri "http://127.0.0.1:8000/runs/<run-id>/artifacts"
 - `GET /runs/{run_id}/tasks`
 - `GET /runs/{run_id}/artifacts`
 - `POST /runs/{run_id}/resume`
+- `POST /runs/{run_id}/reopen`
 
 ## CLI monitor
 
@@ -159,6 +174,8 @@ Inside chat:
 - type plain text to start a new run
 - use `/runs` to list recent runs
 - use `/watch <run-id>` to follow a run
+- use `/revise <run-id>` to reopen a run and then enter revision instructions
+- use `/revise <run-id> <instructions>` to reopen a run inline
 - use `/help` for commands
 - use `/quit` to exit
 
@@ -166,10 +183,12 @@ Each completed chat run writes its final artifact to `output/chat-<run-id>.md`.
 
 ## Coding workspaces
 
-Coding runs now materialize task outputs into per-run folders under `output/runs/<run-id>/`.
+Coding runs now materialize task outputs into human-readable project folders under `output/runs/`.
 
-- task-level work is written to `output/runs/<run-id>/tasks/<task-id>/`
-- the final deliverable is written to `output/runs/<run-id>/final/`
+- project roots use a readable slug such as `output/runs/make-an-html5-checkers-game/`
+- if the same goal already has a folder for a different run, the next folder becomes `...-2`, `...-3`, and so on
+- task-level work is written to `output/runs/<project-slug>/tasks/<step-name>/`
+- the final deliverable is written to `output/runs/<project-slug>/final/`
 - each workspace includes an `artifact_manifest.json`
 
 For single-file browser tasks like an HTML game, the final folder will typically contain:
@@ -178,6 +197,15 @@ For single-file browser tasks like an HTML game, the final folder will typically
 - `artifact_manifest.json`
 
 The final artifact metadata returned by the API includes the workspace path, entrypoint, and file list.
+
+## Revision behavior
+
+When you reopen a coding run:
+
+- the new run gets its own run id in the database
+- the agents reuse the original project workspace on disk
+- revised task outputs are written back into the original `tasks/` and `final/` folders
+- the reopen request carries the original workspace path, file list, and revision instructions into the next planning and execution cycle
 
 ## Notes on scale
 

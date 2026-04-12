@@ -38,3 +38,21 @@ def test_coding_phase_instructions_distinguish_verification_from_implementation(
 
     assert phase == "verification"
     assert "return a concrete verification report" in guidance.lower()
+
+
+def test_source_workspace_file_context_uses_clean_excerpt_for_large_files(tmp_path: Path) -> None:
+    workspace = tmp_path / "source"
+    workspace.mkdir(parents=True)
+    large_file = workspace / "index.html"
+    large_file.write_text("A" * 8000 + "B" * 8000, encoding="utf-8")
+
+    context = Orchestrator._source_workspace_file_context(
+        {
+            "source_workspace_path": str(workspace),
+            "source_files": ["index.html"],
+        },
+        max_chars=4000,
+    )
+
+    assert "[... existing file truncated for prompt size ...]" in context
+    assert context.endswith("```")

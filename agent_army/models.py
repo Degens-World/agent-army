@@ -41,6 +41,12 @@ class RunCreate(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class RunReopen(BaseModel):
+    instructions: str = Field(min_length=3)
+    max_parallelism: int | None = Field(default=None, ge=1, le=64)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class RunSummary(BaseModel):
     id: str
     goal: str

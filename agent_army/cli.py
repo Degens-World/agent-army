@@ -221,6 +221,45 @@ async def _chat(
                 )
                 await _announce_final_artifact(console, runtime, command.value)
                 continue
+            if command.kind == "revise_prompt":
+                source_run_id = command.value.strip()
+                if not source_run_id:
+                    source_run_id = (await asyncio.to_thread(console.input, "[bold yellow]run-id> [/]")).strip()
+                if not source_run_id:
+                    console.print("Revision cancelled: no run id provided.")
+                    continue
+                instructions = (await asyncio.to_thread(console.input, "[bold yellow]revise> [/]What should be revised? ")).strip()
+                if not instructions:
+                    console.print("Revision cancelled: no revision instructions provided.")
+                    continue
+                run_id = await runtime.reopen_run(source_run_id=source_run_id, instructions=instructions)
+                console.print(f"Dispatched revision run {run_id} from {source_run_id}")
+                await _monitor(
+                    console,
+                    db_path=db_path,
+                    run_id=run_id,
+                    refresh_seconds=refresh_seconds,
+                    once=False,
+                    show_completed=show_completed,
+                    mode=mode,
+                )
+                await _announce_final_artifact(console, runtime, run_id)
+                continue
+            if command.kind == "revise":
+                source_run_id, instructions = command.value.split("|", 1)
+                run_id = await runtime.reopen_run(source_run_id=source_run_id, instructions=instructions)
+                console.print(f"Dispatched revision run {run_id} from {source_run_id}")
+                await _monitor(
+                    console,
+                    db_path=db_path,
+                    run_id=run_id,
+                    refresh_seconds=refresh_seconds,
+                    once=False,
+                    show_completed=show_completed,
+                    mode=mode,
+                )
+                await _announce_final_artifact(console, runtime, run_id)
+                continue
             if command.kind == "task":
                 run_id = await runtime.create_run(goal=command.value)
                 console.print(f"Dispatched run {run_id}")
