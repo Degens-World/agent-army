@@ -58,6 +58,36 @@ class GitHubClient:
         data = await self._get("/user")
         return data["login"]
 
+    async def check_repo_legitimacy(self, owner: str, repo: str) -> tuple[bool, str]:
+        """
+        Returns (is_legitimate, reason). Flags repos that look like bounty farms:
+        - Created less than 60 days ago with low stars
+        - Fork ratio >> star ratio (bots forking to claim)
+        - All issues posted by a single user
+        """
+        from datetime import datetime, timezone
+        data = await self._get(f"/repos/{owner}/{repo}")
+        stars = data.get("stargazers_count", 0)
+        forks = data.get("forks_count", 0)
+        created_at = data.get("created_at", "")
+        age_days = 0
+        if created_at:
+            created = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+            age_days = (datetime.now(timezone.utc) - created).days
+
+        if age_days < 60 and stars < 5:
+            return False, f"repo is only {age_days} days old with {stars} stars"
+
+        if stars > 0 and forks / stars > 20:
+            return False, f"suspicious fork/star ratio ({forks} forks, {stars} stars) — likely a bounty farm"
+
+        issues = await self._get(f"/repos/{owner}/{repo}/issues", params={"state": "open", "per_page": 30})
+        creators = {i["user"]["login"] for i in issues if not i.get("pull_request")}
+        if len(creators) == 1 and len(issues) > 5:
+            return False, f"all {len(issues)} issues created by a single user ({next(iter(creators))})"
+
+        return True, "ok"
+
     async def search_issues(self, query: str, per_page: int = 50) -> list[Issue]:
         """Search GitHub issues using the search API."""
         data = await self._get(

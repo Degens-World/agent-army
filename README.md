@@ -207,6 +207,69 @@ When you reopen a coding run:
 - revised task outputs are written back into the original `tasks/` and `final/` folders
 - the reopen request carries the original workspace path, file list, and revision instructions into the next planning and execution cycle
 
+## Bounty Hunter
+
+The bounty hunter scans GitHub repos and orgs for open issues tagged as bug bounties or marked with help-wanted labels, checks whether they are actively being worked on, prompts you to approve each one, then uses a local Ollama model to analyze the codebase, generate a fix, run tests, fork the repo, and submit a PR. All activity is logged to a local SQLite table.
+
+### Setup
+
+```bash
+export GITHUB_TOKEN=your_personal_access_token
+```
+
+### Commands
+
+Hunt a single repo:
+
+```bash
+agent-army bounty-hunt owner/repo
+```
+
+Hunt an entire GitHub org across all its repos:
+
+```bash
+agent-army bounty-hunt --org ergoplatform
+```
+
+Custom GitHub issue search query:
+
+```bash
+agent-army bounty-hunt --search "org:ergoplatform is:issue is:open bounty"
+```
+
+Override the Ollama model used for fixing:
+
+```bash
+agent-army bounty-hunt owner/repo --model qwen2.5-coder:7b
+```
+
+View your hunt history and bounty log:
+
+```bash
+agent-army bounty-log
+```
+
+### How it works
+
+1. **Scan** — fetches open issues matching bounty labels (`bug-bounty`, `bounty`, `help wanted`, `good-first-issue`, `enhancement`) and keywords (`$`, `bounty`, `reward`)
+2. **Activity check** — skips issues that are assigned, have "in progress" comments, or have linked PRs
+3. **Legitimacy check** — flags repos that look like bounty farms: too new with low stars, abnormal fork/star ratio, or all issues from one user. Refuses to submit a PR to flagged repos
+4. **Approval** — presents each candidate interactively; you hit `y` or `n`
+5. **Fix** — asks Ollama to identify relevant files, read them, generate a patch
+6. **Test** — runs `pytest` if present (best effort, doesn't block the PR)
+7. **Submit** — forks the repo, commits the fix to a branch, opens a PR with a structured description
+8. **Log** — records repo, issue number, bounty amount, PR URL, and status to SQLite
+
+### Legitimacy checks
+
+Before submitting any PR the hunter verifies the target repo:
+
+- Repo must be older than 60 days **or** have 5+ stars
+- Fork/star ratio must be below 20× (high ratio signals bot farming)
+- Issues must not all come from a single user
+
+If any check fails the issue is skipped with an explanation and nothing is submitted.
+
 ## Notes on scale
 
 This MVP supports hundreds of logical subtasks but intentionally limits simultaneous model executions. Real throughput depends on prompt size, model size, GPU or CPU capacity, and review overhead.

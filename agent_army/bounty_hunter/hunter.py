@@ -169,6 +169,13 @@ class BountyHunter:
                 self._console.print("[red]Failed to submit PR for this issue.[/red]")
 
     async def _fix_and_submit(self, owner: str, repo: str, issue: Issue) -> str:
+        self._console.print("[cyan]Checking repo legitimacy...[/cyan]")
+        legit, reason = await self._gh.check_repo_legitimacy(owner, repo)
+        if not legit:
+            self._console.print(f"[bold red]SKIPPED — repo failed legitimacy check: {reason}[/bold red]")
+            self._console.print("[dim]This repo shows signs of being a bounty farm. No PR submitted.[/dim]")
+            return ""
+
         branch = f"bounty-hunter/issue-{issue.number}"
         default_branch = await self._gh.get_repo_default_branch(owner, repo)
 
