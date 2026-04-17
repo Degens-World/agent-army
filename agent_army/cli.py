@@ -19,6 +19,7 @@ from agent_army.monitor import (
 from agent_army.chat import CHAT_HELP, chat_result_path, classify_chat_input
 from agent_army.config import get_settings
 from agent_army.runtime import AgentArmyRuntime
+from agent_army.services.ollama import OllamaClient
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,6 +42,16 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--refresh", type=float, default=1.0)
     chat_parser.add_argument("--show-completed", action="store_true")
     chat_parser.add_argument("--mode", choices=["scroll", "dashboard"], default="dashboard")
+
+    hunt_parser = subparsers.add_parser("bounty-hunt", help="Hunt for bug bounties in a GitHub repo.")
+    hunt_parser.add_argument("repo", help="GitHub repo in owner/name format, e.g. torvalds/linux")
+    hunt_parser.add_argument("--db-path", type=Path, default=Path("agent_army.db"))
+    hunt_parser.add_argument("--model", type=str, default=None, help="Ollama model override (default: worker_model from settings)")
+    hunt_parser.add_argument("--github-token", type=str, default=None, help="GitHub token (default: GITHUB_TOKEN env var)")
+
+    log_parser = subparsers.add_parser("bounty-log", help="Show the bounty hunt log.")
+    log_parser.add_argument("--db-path", type=Path, default=Path("agent_army.db"))
+
     return parser
 
 
@@ -49,6 +60,12 @@ def main() -> None:
     args = parser.parse_args()
     console = Console()
 
+    if args.command == "bounty-hunt":
+        asyncio.run(_bounty_hunt(console, repo=args.repo, db_path=args.db_path, model=args.model, github_token=args.github_token))
+        return
+    if args.command == "bounty-log":
+        _bounty_log(console, db_path=args.db_path)
+        return
     if args.command == "runs":
         asyncio.run(_list_runs(console, db_path=args.db_path))
         return
@@ -288,6 +305,69 @@ async def _announce_final_artifact(console: Console, runtime: AgentArmyRuntime, 
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(run.final_artifact["content"], encoding="utf-8")
     console.print(f"Saved final artifact to {output_path}")
+
+
+async def _bounty_hunt(
+    console: Console,
+    *,
+    repo: str,
+    db_path: Path,
+    model: str | None,
+    github_token: str | None,
+) -> None:
+    import os
+    from agent_army.bounty_hunter.db import BountyDB
+    from agent_army.bounty_hunter.github import GitHubClient
+    from agent_army.bounty_hunter.hunter import BountyHunter
+
+    token = github_token or os.environ.get("GITHUB_TOKEN", "")
+    if not token:
+        console.print("[red]GitHub token required. Set GITHUB_TOKEN or pass --github-token.[/red]")
+        return
+    if "/" not in repo:
+        console.print("[red]Repo must be in owner/name format, e.g. torvalds/linux[/red]")
+        return
+
+    settings = get_settings()
+    resolved_model = model or settings.worker_model
+    ollama = OllamaClient(host=settings.ollama_host, timeout_seconds=settings.request_timeout_seconds)
+    github = GitHubClient(token=token)
+    db = BountyDB(db_path)
+
+    hunter = BountyHunter(github=github, ollama=ollama, db=db, model=resolved_model, console=console)
+    await hunter.hunt(repo)
+
+
+def _bounty_log(console: Console, *, db_path: Path) -> None:
+    from agent_army.bounty_hunter.db import BountyDB
+
+    db = BountyDB(db_path)
+    records = db.list_all()
+
+    table = Table(title="Bounty Hunt Log")
+    table.add_column("ID", style="dim")
+    table.add_column("Repo")
+    table.add_column("Issue")
+    table.add_column("Title")
+    table.add_column("Bounty", style="green")
+    table.add_column("Status")
+    table.add_column("PR")
+
+    for r in records:
+        table.add_row(
+            str(r.id),
+            r.repo,
+            f"#{r.issue_number}",
+            r.issue_title[:60],
+            r.bounty_amount,
+            r.status,
+            r.pr_url or "—",
+        )
+
+    if not records:
+        table.add_row("-", "-", "-", "No hunts logged yet", "-", "-", "-")
+
+    console.print(table)
 
 
 if __name__ == "__main__":
