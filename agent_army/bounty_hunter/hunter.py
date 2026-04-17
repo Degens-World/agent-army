@@ -74,18 +74,55 @@ class BountyHunter:
     async def hunt(self, repo: str) -> None:
         owner, name = repo.split("/", 1)
         self._console.print(f"[bold cyan]Scanning {repo} for bounty issues...[/bold cyan]")
-
         issues = await self._gh.list_bounty_issues(owner, name)
+        await self._filter_and_work(issues, default_repo=repo)
+
+    async def hunt_org(self, org: str) -> None:
+        self._console.print(f"[bold cyan]Searching org {org} for bounty issues...[/bold cyan]")
+        queries = [
+            f'org:{org} is:issue is:open label:"bug-bounty"',
+            f'org:{org} is:issue is:open label:"bounty"',
+            f'org:{org} is:issue is:open label:"help wanted"',
+            f'org:{org} is:issue is:open label:"good-first-issue"',
+            f'org:{org} is:issue is:open bounty in:title,body',
+        ]
+        seen: set[str] = set()
+        issues: list[Issue] = []
+        for q in queries:
+            try:
+                results = await self._gh.search_issues(q, per_page=30)
+                for i in results:
+                    key = i.html_url
+                    if key not in seen:
+                        seen.add(key)
+                        issues.append(i)
+            except Exception as e:
+                self._console.print(f"[dim]Search query failed: {e}[/dim]")
+        self._console.print(f"Found [bold]{len(issues)}[/bold] candidate(s).")
+        await self._filter_and_work(issues)
+
+    async def hunt_search(self, query: str) -> None:
+        self._console.print(f"[bold cyan]Searching: {query}[/bold cyan]")
+        issues = await self._gh.search_issues(query, per_page=50)
+        self._console.print(f"Found [bold]{len(issues)}[/bold] candidate(s).")
+        await self._filter_and_work(issues)
+
+    async def _filter_and_work(self, issues: list[Issue], default_repo: str = "") -> None:
         if not issues:
             self._console.print("[yellow]No bounty issues found.[/yellow]")
             return
 
-        self._console.print(f"Found [bold]{len(issues)}[/bold] candidate(s). Checking activity...")
+        self._console.print("Checking activity...")
         candidates: list[Issue] = []
         for issue in issues:
+            repo = issue.repo or default_repo
+            if not repo or "/" not in repo:
+                candidates.append(issue)
+                continue
+            owner, name = repo.split("/", 1)
             active = await self._gh.is_actively_worked(owner, name, issue)
             if active:
-                self._console.print(f"  [dim]#{issue.number} skipped — actively worked[/dim]")
+                self._console.print(f"  [dim]#{issue.number} {repo} skipped — actively worked[/dim]")
             else:
                 candidates.append(issue)
 
@@ -94,13 +131,14 @@ class BountyHunter:
             return
 
         for issue in candidates:
+            repo = issue.repo or default_repo
             self._console.print()
             self._console.print(Panel(
                 f"[bold]#{issue.number}[/bold] {issue.title}\n"
                 f"[dim]{issue.html_url}[/dim]\n\n"
                 f"{(issue.body or '')[:500]}"
                 + ("..." if len(issue.body or '') > 500 else ""),
-                title=f"Bounty: [green]{issue.bounty_amount}[/green]  Labels: {', '.join(issue.labels) or 'none'}",
+                title=f"[cyan]{repo}[/cyan]  Bounty: [green]{issue.bounty_amount}[/green]  Labels: {', '.join(issue.labels) or 'none'}",
                 border_style="cyan",
             ))
 
@@ -116,6 +154,12 @@ class BountyHunter:
                 status="in_progress",
             )
 
+            if "/" not in repo:
+                self._console.print("[red]Cannot determine repo for this issue — skipping fix.[/red]")
+                self._db.update(record_id, status="failed")
+                continue
+
+            owner, name = repo.split("/", 1)
             pr_url = await self._fix_and_submit(owner, name, issue)
             if pr_url:
                 self._db.update(record_id, status="pr_submitted", pr_url=pr_url)

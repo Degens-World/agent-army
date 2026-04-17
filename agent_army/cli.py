@@ -44,7 +44,9 @@ def build_parser() -> argparse.ArgumentParser:
     chat_parser.add_argument("--mode", choices=["scroll", "dashboard"], default="dashboard")
 
     hunt_parser = subparsers.add_parser("bounty-hunt", help="Hunt for bug bounties in a GitHub repo.")
-    hunt_parser.add_argument("repo", help="GitHub repo in owner/name format, e.g. torvalds/linux")
+    hunt_parser.add_argument("repo", nargs="?", default=None, help="GitHub repo in owner/name format, e.g. torvalds/linux")
+    hunt_parser.add_argument("--org", type=str, default=None, help="Search all repos in a GitHub org")
+    hunt_parser.add_argument("--search", type=str, default=None, help="Raw GitHub issue search query")
     hunt_parser.add_argument("--db-path", type=Path, default=Path("agent_army.db"))
     hunt_parser.add_argument("--model", type=str, default=None, help="Ollama model override (default: worker_model from settings)")
     hunt_parser.add_argument("--github-token", type=str, default=None, help="GitHub token (default: GITHUB_TOKEN env var)")
@@ -61,7 +63,7 @@ def main() -> None:
     console = Console()
 
     if args.command == "bounty-hunt":
-        asyncio.run(_bounty_hunt(console, repo=args.repo, db_path=args.db_path, model=args.model, github_token=args.github_token))
+        asyncio.run(_bounty_hunt(console, repo=args.repo, org=args.org, search=args.search, db_path=args.db_path, model=args.model, github_token=args.github_token))
         return
     if args.command == "bounty-log":
         _bounty_log(console, db_path=args.db_path)
@@ -310,7 +312,9 @@ async def _announce_final_artifact(console: Console, runtime: AgentArmyRuntime, 
 async def _bounty_hunt(
     console: Console,
     *,
-    repo: str,
+    repo: str | None,
+    org: str | None,
+    search: str | None,
     db_path: Path,
     model: str | None,
     github_token: str | None,
@@ -324,7 +328,10 @@ async def _bounty_hunt(
     if not token:
         console.print("[red]GitHub token required. Set GITHUB_TOKEN or pass --github-token.[/red]")
         return
-    if "/" not in repo:
+    if not repo and not org and not search:
+        console.print("[red]Provide a repo (owner/name), --org <org>, or --search <query>.[/red]")
+        return
+    if repo and "/" not in repo:
         console.print("[red]Repo must be in owner/name format, e.g. torvalds/linux[/red]")
         return
 
@@ -335,7 +342,13 @@ async def _bounty_hunt(
     db = BountyDB(db_path)
 
     hunter = BountyHunter(github=github, ollama=ollama, db=db, model=resolved_model, console=console)
-    await hunter.hunt(repo)
+
+    if search:
+        await hunter.hunt_search(search)
+    elif org:
+        await hunter.hunt_org(org)
+    else:
+        await hunter.hunt(repo)  # type: ignore[arg-type]
 
 
 def _bounty_log(console: Console, *, db_path: Path) -> None:

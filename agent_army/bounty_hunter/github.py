@@ -6,7 +6,10 @@ from typing import Any
 
 import httpx
 
-BOUNTY_LABELS = {"bug-bounty", "bounty", "hacktoberfest", "good-first-issue", "help wanted"}
+BOUNTY_LABELS = {
+    "bug-bounty", "bounty", "hacktoberfest", "good-first-issue", "help wanted",
+    "enhancement", "feature", "bug", "up-for-grabs", "beginner-friendly",
+}
 BOUNTY_KEYWORDS = re.compile(r"\$\s*\d+|\b(bounty|reward|prize|payout)\b", re.IGNORECASE)
 ACTIVE_SIGNALS = re.compile(
     r"\b(working on|in progress|wip|i('ll| will) fix|taking this|assigned to me|pr #\d+)\b",
@@ -23,6 +26,7 @@ class Issue:
     assignees: list[str]
     html_url: str
     bounty_amount: str = ""
+    repo: str = ""
 
 
 @dataclass
@@ -54,6 +58,37 @@ class GitHubClient:
         data = await self._get("/user")
         return data["login"]
 
+    async def search_issues(self, query: str, per_page: int = 50) -> list[Issue]:
+        """Search GitHub issues using the search API."""
+        data = await self._get(
+            "/search/issues",
+            params={"q": query, "per_page": per_page, "sort": "updated", "order": "desc"},
+        )
+        issues = []
+        for item in data.get("items", []):
+            if item.get("pull_request"):
+                continue
+            labels = [lb["name"].lower() for lb in item.get("labels", [])]
+            body = item.get("body") or ""
+            title = item.get("title") or ""
+            amount_match = re.search(r"\$\s*(\d[\d,]*)", title + " " + body)
+            bounty_amount = f"${amount_match.group(1)}" if amount_match else "unknown"
+            repo_url = item.get("repository_url", "")
+            repo_full = "/".join(repo_url.split("/")[-2:]) if repo_url else "unknown/unknown"
+            issues.append(
+                Issue(
+                    number=item["number"],
+                    title=title,
+                    body=body,
+                    labels=labels,
+                    assignees=[a["login"] for a in item.get("assignees", [])],
+                    html_url=item["html_url"],
+                    bounty_amount=bounty_amount,
+                    repo=repo_full,
+                )
+            )
+        return issues
+
     async def list_bounty_issues(self, owner: str, repo: str) -> list[Issue]:
         data = await self._get(
             f"/repos/{owner}/{repo}/issues",
@@ -81,6 +116,7 @@ class GitHubClient:
                     assignees=[a["login"] for a in item.get("assignees", [])],
                     html_url=item["html_url"],
                     bounty_amount=bounty_amount,
+                    repo=f"{owner}/{repo}",
                 )
             )
         return issues
